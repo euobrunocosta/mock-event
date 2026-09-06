@@ -1,4 +1,5 @@
 const App = (() => {
+  const CONFIG_URL = "https://script.google.com/macros/s/AKfycbypOrqLGCFNmaiVlg9kOEH-NUinZIV9ccvrOZAjMQdTKIlWeDBHL4iFH_BHLnZ4abgE7g/exec";
   const STORAGE_KEY = "nfc_target_route";
   const TIME_KEY = "nfc_event_time";
   const DEFAULT_ROUTE = "pre-evento.html";
@@ -24,15 +25,9 @@ const App = (() => {
   }
 
   function setRoute(route) {
-    if (!VALID_ROUTES.includes(route)) {
-      return DEFAULT_ROUTE;
-    }
-    localStorage.setItem(STORAGE_KEY, route);
-    return route;
-  }
-
-  function redirectFromNfc() {
-    window.location.replace(getRoute());
+    const next = VALID_ROUTES.includes(route) ? route : DEFAULT_ROUTE;
+    localStorage.setItem(STORAGE_KEY, next);
+    return next;
   }
 
   function normalizeTime(value) {
@@ -56,6 +51,68 @@ const App = (() => {
     }
     localStorage.setItem(TIME_KEY, time);
     return time;
+  }
+
+  function applyConfig(config) {
+    const route = setRoute(config.route);
+    const time = setEventTime(config.time);
+    return { route, time };
+  }
+
+  async function loadRemoteConfig() {
+    const url = `${CONFIG_URL}?t=${Date.now()}`;
+    const response = await fetch(url, { cache: "no-store", redirect: "follow" });
+    if (!response.ok) {
+      throw new Error("remote-read");
+    }
+    const data = await response.json();
+    return applyConfig({
+      route: data.route,
+      time: data.time,
+    });
+  }
+
+  async function saveRemoteConfig(route, time, key) {
+    const params = new URLSearchParams({
+      action: "set",
+      route,
+      time: time || "",
+      key: key || "",
+      t: String(Date.now()),
+    });
+    const response = await fetch(`${CONFIG_URL}?${params}`, {
+      cache: "no-store",
+      redirect: "follow",
+    });
+    if (!response.ok) {
+      throw new Error("remote-write");
+    }
+    const data = await response.json();
+    if (!data.ok) {
+      throw new Error(data.error || "remote-write");
+    }
+    return applyConfig({
+      route: data.route,
+      time: data.time,
+    });
+  }
+
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("timeout")), ms);
+      }),
+    ]);
+  }
+
+  async function redirectFromNfc() {
+    try {
+      const config = await withTimeout(loadRemoteConfig(), 8000);
+      window.location.replace(config.route);
+    } catch (error) {
+      window.location.replace(getRoute());
+    }
   }
 
   function pad(value) {
@@ -161,15 +218,39 @@ const App = (() => {
     });
   }
 
-  function refreshAdminStatus() {
+  function refreshAdminStatus(source) {
     const currentRoute = document.querySelector("[data-current-route]");
     const currentTime = document.querySelector("[data-current-time]");
+    const currentSource = document.querySelector("[data-config-source]");
     if (currentRoute) {
       currentRoute.textContent = ROUTE_LABELS[getRoute()];
     }
     if (currentTime) {
       currentTime.textContent = timeLabel();
     }
+    if (currentSource && source) {
+      currentSource.textContent = source;
+    }
+  }
+
+  function fillAdminForm(form) {
+    const timeInput = form.querySelector("[data-time-input]");
+    const activeRoute = getRoute();
+    const selected = form.querySelector(`input[value="${activeRoute}"]`);
+    if (selected) {
+      selected.checked = true;
+    }
+
+    const savedTime = getEventTime();
+    const modeValue = savedTime ? "manual" : "auto";
+    const modeInput = form.querySelector(`input[name='time_mode'][value='${modeValue}']`);
+    if (modeInput) {
+      modeInput.checked = true;
+    }
+    if (timeInput) {
+      timeInput.value = savedTime || "09:30";
+    }
+    syncTimeMode(form);
   }
 
   function syncTimeMode(form) {
@@ -188,52 +269,70 @@ const App = (() => {
       return;
     }
 
-    const timeInput = form.querySelector("[data-time-input]");
-    const activeRoute = getRoute();
-    const selected = form.querySelector(`input[value="${activeRoute}"]`);
-    if (selected) {
-      selected.checked = true;
-    }
-
-    const savedTime = getEventTime();
-    const modeValue = savedTime ? "manual" : "auto";
-    const modeInput = form.querySelector(`input[name='time_mode'][value='${modeValue}']`);
-    if (modeInput) {
-      modeInput.checked = true;
-    }
-    if (timeInput) {
-      timeInput.value = savedTime || "09:30";
-    }
-
+    fillAdminForm(form);
     refreshAdminStatus();
-    syncTimeMode(form);
 
     form.querySelectorAll("input[name='time_mode']").forEach((input) => {
       input.addEventListener("change", () => syncTimeMode(form));
     });
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(form);
-      setRoute(data.get("route"));
-      setEventTime(data.get("time_mode") === "manual" ? data.get("event_time") : "");
-      refreshAdminStatus();
+      const route = data.get("route");
+      const time = data.get("time_mode") === "manual" ? data.get("event_time") : "";
+      const key = String(data.get("admin_key") || "").trim();
+      const button = form.querySelector("[type='submit']");
+
       if (feedback) {
-        feedback.textContent = "Configuração salva. O chaveiro NFC usa esta rota e este horário.";
+        feedback.classList.remove("is-error");
+        feedback.textContent = "Salvando no Google…";
+      }
+      if (button) {
+        button.disabled = true;
+      }
+
+      try {
+        await saveRemoteConfig(route, time, key);
+        fillAdminForm(form);
+        refreshAdminStatus("Google");
+        if (feedback) {
+          feedback.textContent = "Configuração salva. O chaveiro NFC já usa esta rota e este horário.";
+        }
+      } catch (error) {
+        if (feedback) {
+          feedback.classList.add("is-error");
+          feedback.textContent = error.message === "unauthorized"
+            ? "Chave incorreta. Use o ADMIN_KEY do Apps Script."
+            : "Não foi possível salvar no Google. Tente de novo.";
+        }
+      } finally {
+        if (button) {
+          button.disabled = false;
+        }
       }
     });
   }
 
-  function init() {
+  async function init() {
     const page = document.body.dataset.page;
 
     if (page === "router") {
-      redirectFromNfc();
+      await redirectFromNfc();
       return;
+    }
+
+    let configSource = "cópia local";
+    try {
+      await loadRemoteConfig();
+      configSource = "Google";
+    } catch (error) {
+      configSource = "cópia local";
     }
 
     if (page === "admin") {
       initAdmin();
+      refreshAdminStatus(configSource);
     }
 
     if (page === "pre-evento") {
@@ -254,6 +353,8 @@ const App = (() => {
     setRoute,
     getEventTime,
     setEventTime,
+    loadRemoteConfig,
+    saveRemoteConfig,
     redirectFromNfc,
     VALID_ROUTES,
     ROUTE_LABELS,

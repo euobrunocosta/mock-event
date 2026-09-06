@@ -28,11 +28,12 @@
     <section class="admin-panel">
       <p class="kicker">Administração</p>
       <h1>Definir rota e hora do chaveiro NFC</h1>
-      <p class="lead">A página e o horário escolhidos serão usados quando alguém tocar no chaveiro.</p>
+      <p class="lead">A página e o horário são gravados no Google e valem para qualquer pessoa que tocar no chaveiro.</p>
 
       <div class="status-box">
         <div>Rota ativa agora: <strong data-current-route>Pré-evento</strong></div>
         <div>Hora do dia: <strong data-current-time>relógio do celular</strong></div>
+        <div>Fonte: <strong data-config-source>carregando…</strong></div>
       </div>
 
       <form data-admin-form>
@@ -78,6 +79,15 @@
           <label class="time-field">
             Hora
             <input type="time" name="event_time" data-time-input value="09:30">
+          </label>
+        </fieldset>
+
+        <fieldset class="admin-fieldset">
+          <legend>Chave de administração</legend>
+          <p class="muted">É o valor de ADMIN_KEY nas propriedades do Apps Script. Não fica salvo nesta página.</p>
+          <label class="time-field">
+            Chave
+            <input type="password" name="admin_key" autocomplete="off" required>
           </label>
         </fieldset>
 
